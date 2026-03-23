@@ -1,0 +1,11 @@
+pathlib
+fastapi
+shutil
+funasr
+tempfile
+torch
+numpy
+librosa
+onnxruntime
+onnx
+jieba
