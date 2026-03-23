@@ -62,8 +62,19 @@ public class AvatarManager : MonoBehaviour
                 {
                     string bsName = sharedMesh.GetBlendShapeName(i);
                     // 某些模型可能有前缀 (e.g. "Body.jawOpen")，这里取后半部分
-                    if (bsName.Contains(".")) bsName = bsName.Substring(bsName.LastIndexOf('.') + 1);
-                    bsIndexMap[bsName] = i;
+                    string cleanName = bsName.Contains(".") ? bsName.Substring(bsName.LastIndexOf('.') + 1) : bsName;
+                    
+                    // 1. 直接匹配
+                    bsIndexMap[cleanName] = i;
+                    
+                    // 2. 模糊匹配 (处理 Arnold 模型的 _L / _R 后缀)
+                    // ARKit "eyeBlinkLeft" -> Arnold "eyeBlink_L"
+                    if (cleanName.EndsWith("_L")) bsIndexMap[cleanName.Replace("_L", "Left")] = i;
+                    if (cleanName.EndsWith("_R")) bsIndexMap[cleanName.Replace("_R", "Right")] = i;
+                    
+                    // 3. 处理首字母大小写 (ARKit "jawOpen" -> Arnold "JawOpen")
+                    string camelName = char.ToLower(cleanName[0]) + cleanName.Substring(1);
+                    if (!bsIndexMap.ContainsKey(camelName)) bsIndexMap[camelName] = i;
                 }
 
                 // 初始化 Vertex 模式所需的副本
