@@ -332,7 +332,7 @@ async def _broadcast_a2f_frame(frame: GeometryFrame):
             "index": frame.frame_index,
             "geometry": frame.geometry.tolist(),
             "size": len(frame.geometry),
-            "is_blendshape": getattr(frame, "is_blendshape", False),
+            "is_blendshape": True,  # 显式设为 True，因为当前流程强制转换
         }
     )
 
