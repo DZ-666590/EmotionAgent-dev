@@ -44,6 +44,10 @@ class A2FBridge:
     # ARKit 52 表情基路径
     BS_DATA_PATH = "D:/Audio2Face-3D-SDK-main/Audio2Face-3D-SDK-main/_data/audio2face-models/audio2face-3d-v3.0/bs_skin_Mark.npz"
 
+    # 灵敏度控制
+    OUTPUT_STRENGTH = 1.5  # 放大系数
+    STRENGTH_OFFSET = 0.05  # 最小阈值，过滤噪声
+
     def __init__(self):
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -96,6 +100,10 @@ class A2FBridge:
         # 解方程 (拟合权重)
         weights_tuple = np.linalg.lstsq(self._bs_matrix, target, rcond=None)
         weights_sol = cast(np.ndarray, weights_tuple[0])
+
+        # 应用放大和阈值
+        weights_sol = (weights_sol - self.STRENGTH_OFFSET) * self.OUTPUT_STRENGTH
+
         # 限制范围 [0, 1]
         weights = np.clip(weights_sol, 0, 1)
         final_weights = cast(np.ndarray, weights)
@@ -173,7 +181,7 @@ class A2FBridge:
             # 如果采样率不是 16000，重采样（理论上 ffmpeg 已处理）
             if sample_rate != 16000:
                 num_samples = int(len(audio_data) * 16000 / sample_rate)
-                audio_data = signal.resample(audio_data, num_samples)
+                audio_data = cast(np.ndarray, signal.resample(audio_data, num_samples))
 
             return audio_data.astype(np.float32)
 
