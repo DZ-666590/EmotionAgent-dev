@@ -4,6 +4,7 @@ import { WelcomeView } from './components/views/WelcomeView';
 import { ChatView } from './components/views/ChatView';
 import { AdminView } from './components/views/AdminView';
 import { SettingsView } from './components/views/SettingsView';
+import A2FStandaloneViewer from './components/views/A2FStandaloneViewer';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 function App() {
@@ -16,6 +17,7 @@ function App() {
             <Route path="chat" element={<ChatView />} />
             <Route path="admin" element={<AdminView />} />
             <Route path="settings" element={<SettingsView />} />
+            <Route path="viewer" element={<A2FStandaloneViewer />} />
           </Route>
         </Routes>
       </BrowserRouter>

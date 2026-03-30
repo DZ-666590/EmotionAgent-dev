@@ -1,3 +1,5 @@
+import hashlib
+import time
 import json
 import asyncio
 import httpx
@@ -32,7 +34,7 @@ from ..domain.models import (
 from ..domain.state import CompanionGraphState
 from ..services.output_service import OutputService
 from ..services.vision_service import VisionEmotionService
-from ..services.a2f_bridge import get_a2f_bridge, GeometryFrame
+from ..services.a2f_bridge import get_a2f_bridge, BlendshapeFrame
 
 
 class _CompanionGraphProtocol(Protocol):
@@ -67,6 +69,11 @@ graph = _build_graph()
 # Get absolute path for the directory containing this file
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend", "dist")
+PUBLIC_DIR = os.path.join(BASE_DIR, "frontend", "public")
+AUDIO_CACHE_DIR = os.path.join(PUBLIC_DIR, "audio_cache")
+
+# Ensure directories exist
+os.makedirs(AUDIO_CACHE_DIR, exist_ok=True)
 
 
 class ChatMessage(BaseModel):
@@ -321,8 +328,8 @@ async def a2f_websocket(websocket: WebSocket):
         logger.info(f"[A2F WS] Client disconnected, remaining: {len(_a2f_websockets)}")
 
 
-async def _broadcast_a2f_frame(frame: GeometryFrame):
-    """向所有连接的 WebSocket 客户端广播 geometry 帧 (现在支持权重或顶点)"""
+async def _broadcast_a2f_frame(frame: BlendshapeFrame):
+    """向所有连接的 WebSocket 客户端广播 blendshape 权重帧 (SDK 直接输出)"""
     if not _a2f_websockets:
         return
 
@@ -330,9 +337,8 @@ async def _broadcast_a2f_frame(frame: GeometryFrame):
         {
             "type": "frame",
             "index": frame.frame_index,
-            "geometry": frame.geometry.tolist(),
-            "size": len(frame.geometry),
-            "is_blendshape": True,  # 显式设为 True，因为当前流程强制转换
+            "weights": frame.weights.tolist(),  # SDK 直接输出的权重
+            "count": frame.weight_count,
         }
     )
 
@@ -358,6 +364,73 @@ async def _broadcast_a2f_done():
         except Exception:
             dead_sockets.add(ws)
     _a2f_websockets.difference_update(dead_sockets)
+
+
+@app.post("/api/a2f/offline")
+async def a2f_offline_generate(req: A2FSpeakRequest):
+    """
+    离线生成接口（单一覆盖模式）：
+    1. 生成音频并覆盖 frontend/public/audio_cache/output.wav
+    2. 调用 A2F 获取全量权重
+    3. 返回带时间戳的音频 URL 和权重数据
+    """
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="文本内容不能为空")
+
+    # 固定路径，确保容易调试和管理
+    wav_filename = "output.wav"
+    wav_full_path = os.path.join(AUDIO_CACHE_DIR, wav_filename)
+
+    try:
+        # 1. 生成 TTS 音频字节
+        audio_chunks: list[bytes] = []
+        communicate = edge_tts.Communicate(text=req.text, voice=req.voice)
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio" and "data" in chunk:
+                audio_chunks.append(chunk["data"])
+
+        if not audio_chunks:
+            raise HTTPException(status_code=500, detail="TTS 生成失败")
+
+        mp3_data = b"".join(audio_chunks)
+
+        # 2. 调用 A2F Bridge 处理（内部包含转码覆盖逻辑）
+        bridge = get_a2f_bridge()
+        frames = await bridge.process_audio(mp3_data, save_path=wav_full_path)
+
+        # 3. 封装权重
+        weight_data = [
+            {
+                "index": f.frame_index,
+                "weights": f.weights.tolist(),
+                "count": f.weight_count,
+            }
+            for f in frames
+        ]
+
+        # 4. 同时保存一份权重 JSON 到本地，方便手动比对
+        json_path = os.path.join(AUDIO_CACHE_DIR, "weights.json")
+        with open(json_path, "w") as f:
+            json.dump(weight_data, f)
+
+        # 检查是否同时存在 mp3 和 wav
+        has_mp3 = os.path.exists(wav_full_path.replace(".wav", ".mp3"))
+
+        return {
+            "audio_url": f"/audio_cache/{wav_filename}?t={int(time.time() * 1000)}",
+            "audio_url_mp3": f"/audio_cache/{wav_filename.replace('.wav', '.mp3')}?t={int(time.time() * 1000)}"
+            if has_mp3
+            else None,
+            "weights": weight_data,
+            "fps": 30,
+        }
+
+    except Exception as e:
+        import traceback
+
+        error_details = traceback.format_exc()
+        logger.error(f"[A2F Offline] Detailed Error:\n{error_details}")
+        raise HTTPException(status_code=500, detail=f"A2F Process Error: {str(e)}")
 
 
 @app.post("/api/a2f/speak")
@@ -393,6 +466,7 @@ async def a2f_speak(req: A2FSpeakRequest):
         # 2. TTS 完成后，启动 A2F 推理（异步，不阻塞音频流）
         if audio_chunks:
             full_audio = b"".join(audio_chunks)
+            # 使用 create_task 异步运行 A2F 推理并推送帧，不阻塞音频流返回
             asyncio.create_task(_run_a2f_inference(full_audio))
 
     return StreamingResponse(
@@ -444,4 +518,5 @@ async def custom_404_handler(request, __):
     return JSONResponse(status_code=404, content={"error": "Frontend build not found"})
 
 
+app.mount("/audio_cache", StaticFiles(directory=AUDIO_CACHE_DIR), name="audio_cache")
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

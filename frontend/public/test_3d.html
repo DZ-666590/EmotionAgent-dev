@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 数字人 ARKit 离线测试器</title>
+    <style>
+        body { margin: 0; background: #0f172a; color: white; font-family: 'Inter', system-ui, -apple-system, sans-serif; overflow: hidden; display: flex; }
+        #canvas-container { flex: 1; height: 100vh; position: relative; }
+        #controls { 
+            width: 380px; 
+            height: 100vh; 
+            overflow-y: auto; 
+            background: rgba(30, 41, 59, 0.95); 
+            padding: 24px; 
+            box-sizing: border-box; 
+            border-left: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+        }
+        .header { margin-bottom: 24px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 16px; }
+        .header h2 { margin: 0; font-size: 1.25rem; color: #38bdf8; }
+        .header p { margin: 8px 0 0; font-size: 0.875rem; color: #94a3b8; line-height: 1.5; }
+        
+        .slider-group { margin-bottom: 16px; background: rgba(0,0,0,0.2); padding: 12px; rounded: 8px; border-radius: 8px; transition: all 0.2s; }
+        .slider-group:hover { background: rgba(0,0,0,0.3); border-color: #38bdf8; }
+        .slider-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .slider-group label { font-size: 0.75rem; color: #cbd5e1; font-weight: 500; font-family: monospace; }
+        .val-display { font-size: 0.75rem; color: #38bdf8; font-weight: 700; background: rgba(56, 189, 248, 0.1); padding: 2px 6px; border-radius: 4px; }
+        
+        input[type=range] { 
+            width: 100%; 
+            accent-color: #38bdf8;
+            cursor: pointer;
+            height: 6px;
+            background: #334155;
+            border-radius: 3px;
+            appearance: none;
+        }
+        
+        #loading-overlay { 
+            position: absolute; 
+            inset: 0; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            background: #0f172a; 
+            z-index: 100;
+            transition: opacity 0.5s;
+        }
+        .spinner { width: 40px; height: 40px; border: 4px solid #1e293b; border-top: 4px solid #38bdf8; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 16px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        .status-badge { position: absolute; top: 20px; left: 20px; padding: 8px 16px; background: rgba(0,0,0,0.5); border-radius: 20px; font-size: 0.75rem; font-weight: 600; backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.1); }
+        .info-panel { position: absolute; bottom: 20px; left: 20px; padding: 16px; background: rgba(0,0,0,0.5); border-radius: 12px; font-size: 0.75rem; border: 1px solid rgba(255,255,255,0.1); max-width: 300px; color: #94a3b8; }
+        
+        /* 隐藏滚动条但保留功能 */
+        #controls::-webkit-scrollbar { width: 4px; }
+        #controls::-webkit-scrollbar-track { background: transparent; }
+        #controls::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+    </style>
+</head>
+<body>
+    <div id="loading-overlay">
+        <div class="spinner"></div>
+        <div id="loading-text">初始化渲染器...</div>
+    </div>
+
+    <div id="canvas-container">
+        <div class="status-badge" id="status-text">就绪</div>
+        <div class="info-panel">
+            <b>操作提示：</b><br>
+            • 鼠标左键：旋转<br>
+            • 鼠标中键/滚轮：缩放<br>
+            • 鼠标右键：平移<br><br>
+            <b>注意：</b>此测试器直接加载 <code>/models/avatar.glb</code>，请确保该文件存在于 public 目录下且支持 ARKit 形态键。
+        </div>
+    </div>
+
+    <div id="controls">
+        <div class="header">
+            <h2>ARKit Blendshape 控制台</h2>
+            <p>手动调节形态键权重，验证模型是否支持 ARKit 标准协议。</p>
+        </div>
+        <div id="sliders"></div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        const ARKIT_BLENDSHAPES = [
+            'eyeBlinkLeft', 'eyeLookDownLeft', 'eyeLookInLeft', 'eyeLookOutLeft', 'eyeLookUpLeft',
+            'eyeSquintLeft', 'eyeWideLeft', 'eyeBlinkRight', 'eyeLookDownRight', 'eyeLookInRight',
+            'eyeLookOutRight', 'eyeLookUpRight', 'eyeSquintRight', 'eyeWideRight', 'jawForward',
+            'jawLeft', 'jawRight', 'jawOpen', 'mouthClose', 'mouthFunnel', 'mouthPucker',
+            'mouthLeft', 'mouthRight', 'mouthSmileLeft', 'mouthSmileRight', 'mouthFrownLeft',
+            'mouthFrownRight', 'mouthDimpleLeft', 'mouthDimpleRight', 'mouthStretchLeft',
+            'mouthStretchRight', 'mouthRollLower', 'mouthRollUpper', 'mouthShrugLower',
+            'mouthShrugUpper', 'mouthPressLeft', 'mouthPressRight', 'mouthLowerDownLeft',
+            'mouthLowerDownRight', 'mouthUpperUpLeft', 'mouthUpperUpRight', 'browDownLeft',
+            'browDownRight', 'browInnerUp', 'browOuterUpLeft', 'browOuterUpRight', 'cheekPuff',
+            'cheekSquintLeft', 'cheekSquintRight', 'noseSneerLeft', 'noseSneerRight', 'tongueOut'
+        ];
+
+        const container = document.getElementById('canvas-container');
+        const loadingText = document.getElementById('loading-text');
+        const overlay = document.getElementById('loading-overlay');
+        const statusText = document.getElementById('status-text');
+
+        // 初始化场景
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0f172a);
+
+        const camera = new THREE.PerspectiveCamera(35, container.clientWidth / container.clientHeight, 0.1, 100);
+        camera.position.set(0, 0.2, 1.2);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0;
+        container.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.target.set(0, 0.15, 0);
+
+        // 环境光
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        // 补光设计
+        const keyLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        keyLight.position.set(2, 2, 5);
+        scene.add(keyLight);
+
+        const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.5);
+        rimLight.position.set(-2, 2, -5);
+        scene.add(rimLight);
+
+        let avatarMesh = null;
+        let morphTargetDictionary = null;
+
+        loadingText.innerText = "正在加载模型文件...";
+
+        const loader = new GLTFLoader();
+        // 直接从根目录下的 models 加载
+        loader.load('/models/avatar.glb', (gltf) => {
+            overlay.style.opacity = '0';
+            setTimeout(() => overlay.style.display = 'none', 500);
+
+            scene.add(gltf.scene);
+
+            // 查找带有 MorphTargets 的 SkinnedMesh
+            gltf.scene.traverse(child => {
+                if (child.isMesh && child.morphTargetDictionary) {
+                    // 通常面部是第一个被发现的 SkinnedMesh
+                    if (!avatarMesh) {
+                        avatarMesh = child;
+                        morphTargetDictionary = child.morphTargetDictionary;
+                        console.log("检测到形态键网格:", child.name);
+                    }
+                }
+            });
+
+            if (avatarMesh) {
+                statusText.innerText = "模型加载成功: " + avatarMesh.name;
+                createSliders();
+            } else {
+                statusText.innerText = "错误: 未找到形态键";
+                statusText.style.color = "#ef4444";
+                alert("加载成功但未发现形态键！请确保 GLB 模型导出时包含 Morph Targets。");
+            }
+        }, (xhr) => {
+            const percent = Math.round((xhr.loaded / xhr.total) * 100);
+            loadingText.innerText = `模型下载中: ${percent}%`;
+        }, (error) => {
+            console.error(error);
+            loadingText.innerText = "加载失败: 找不到模型文件 /models/avatar.glb";
+            statusText.innerText = "加载失败";
+            statusText.style.color = "#ef4444";
+        });
+
+        function createSliders() {
+            const slidersContainer = document.getElementById('sliders');
+            
+            ARKIT_BLENDSHAPES.forEach(shapeName => {
+                // 常见的命名变体匹配
+                const index = morphTargetDictionary[shapeName] 
+                    ?? morphTargetDictionary[shapeName.toLowerCase()]
+                    ?? morphTargetDictionary['ARKit_' + shapeName]
+                    ?? morphTargetDictionary['blendShape.' + shapeName];
+                
+                if (index !== undefined) {
+                    const group = document.createElement('div');
+                    group.className = 'slider-group';
+                    
+                    const header = document.createElement('div');
+                    header.className = 'slider-header';
+                    
+                    const label = document.createElement('label');
+                    label.innerText = shapeName;
+                    
+                    const valDisplay = document.createElement('div');
+                    valDisplay.className = 'val-display';
+                    valDisplay.innerText = '0.00';
+                    valDisplay.id = `val-${shapeName}`;
+                    
+                    header.appendChild(label);
+                    header.appendChild(valDisplay);
+                    
+                    const input = document.createElement('input');
+                    input.type = 'range';
+                    input.min = 0;
+                    input.max = 1;
+                    input.step = 0.01;
+                    input.value = 0;
+                    
+                    input.oninput = (e) => {
+                        const val = parseFloat(e.target.value);
+                        avatarMesh.morphTargetInfluences[index] = val;
+                        document.getElementById(`val-${shapeName}`).innerText = val.toFixed(2);
+                    };
+                    
+                    group.appendChild(header);
+                    group.appendChild(input);
+                    slidersContainer.appendChild(group);
+                }
+            });
+            
+            if (slidersContainer.children.length === 0) {
+                const notice = document.createElement('p');
+                notice.style.color = '#ef4444';
+                notice.style.fontSize = '0.75rem';
+                notice.innerText = "虽然找到了网格，但找不到任何匹配 ARKit 命名规则的形态键。请检查模型导出的命名。";
+                slidersContainer.appendChild(notice);
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.onresize = () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        };
+    </script>
+</body>
+</html>

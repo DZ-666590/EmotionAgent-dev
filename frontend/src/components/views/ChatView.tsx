@@ -8,7 +8,6 @@ import { useUIStore } from '../../store/uiStore';
 import ReactMarkdown from 'react-markdown';
 import { Send, Square, Mic, Volume2, Square as StopCircle, PlusCircle, MessageCircle, Trash2, RotateCcw } from 'lucide-react';
 import { clsx } from 'clsx';
-
 import { Avatar3D } from './Avatar3D';
 
 export const ChatView: React.FC = () => {
@@ -276,15 +275,15 @@ export const ChatView: React.FC = () => {
       </div>
       </div>
 
+      {/* Right side: Digital Human Reserved Area */}
       <div className={clsx(
-        "hidden lg:flex flex-col w-80 bg-background/40 backdrop-blur-md rounded-3xl border shadow-sm overflow-hidden relative items-center justify-center transition-all duration-500",
-        isVoiceMode && "flex-1 w-full max-w-2xl mx-auto shadow-xl ring-1 ring-primary/20 bg-background/60"
+        "hidden lg:flex flex-col w-80 h-[400px] bg-background/40 backdrop-blur-md rounded-3xl border shadow-sm overflow-hidden relative transition-all duration-500",
+        isVoiceMode && "flex-1 w-full max-w-2xl h-full mx-auto shadow-xl ring-1 ring-primary/20 bg-background/60"
       )}>
         <div className="absolute inset-0 flex flex-col items-center justify-center opacity-20 z-0 pointer-events-none">
-           {/* Removed blue ambient-glow to prevent avatar from looking blue */}
            <div className="w-48 h-48 rounded-full bg-[hsl(30,50%,80%)]/20 flex items-center justify-center blur-2xl"></div>
         </div>
-        <div className="relative z-10 flex flex-col w-full h-full items-center justify-center">
+        <div className="relative z-10 w-full h-full">
            <Avatar3D className="w-full h-full" />
         </div>
       </div>

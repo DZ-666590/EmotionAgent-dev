@@ -1,76 +1,284 @@
-import React, { useCallback, useEffect } from "react";
-import { Unity, useUnityContext } from "react-unity-webgl";
-import { useA2FWebSocket } from "../../hooks/useA2FWebSocket";
+import React, { useEffect, useRef, useState } from "react";
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { useTTSStore } from "../../store/ttsStore";
 
 interface Avatar3DProps {
   className?: string;
-  /** Unity 构建包的基础路径 (e.g. "/unity/build") */
-  buildPath?: string;
 }
 
-/**
- * Unity 驱动的 3D 数字人组件
- * 替换了原有的 Three.js 点云方案，支持更真实的面部渲染
- */
-export const Avatar3D: React.FC<Avatar3DProps> = ({
-  className = "",
-  buildPath = "/unity/build",
-}) => {
-  const { unityProvider, sendMessage, isLoaded, progression } = useUnityContext({
-    loaderUrl: `${buildPath}/project.loader.js`,
-    dataUrl: `${buildPath}/project.data`,
-    frameworkUrl: `${buildPath}/project.framework.js`,
-    codeUrl: `${buildPath}/project.wasm`,
-  });
+const ARKIT_BS = [
+  'eyeBlinkLeft', 'eyeLookDownLeft', 'eyeLookInLeft', 'eyeLookOutLeft', 'eyeLookUpLeft',
+  'eyeSquintLeft', 'eyeWideLeft', 'eyeBlinkRight', 'eyeLookDownRight', 'eyeLookInRight',
+  'eyeLookOutRight', 'eyeLookUpRight', 'eyeSquintRight', 'eyeWideRight', 'jawForward',
+  'jawLeft', 'jawRight', 'jawOpen', 'mouthClose', 'mouthFunnel', 'mouthPucker',
+  'mouthLeft', 'mouthRight', 'mouthSmileLeft', 'mouthSmileRight', 'mouthFrownLeft',
+  'mouthFrownRight', 'mouthDimpleLeft', 'mouthDimpleRight', 'mouthStretchLeft',
+  'mouthStretchRight', 'mouthRollLower', 'mouthRollUpper', 'mouthShrugLower',
+  'mouthShrugUpper', 'mouthPressLeft', 'mouthPressRight', 'mouthLowerDownLeft',
+  'mouthLowerDownRight', 'mouthUpperUpLeft', 'mouthUpperUpRight', 'browDownLeft',
+  'browDownRight', 'browInnerUp', 'browOuterUpLeft', 'browOuterUpRight', 'cheekPuff',
+  'cheekSquintLeft', 'cheekSquintRight', 'noseSneerLeft', 'noseSneerRight', 'tongueOut'
+];
 
-  // 处理从 A2F 接收到的数据并转发给 Unity
-  const handleFrame = useCallback(
-    (frame: { geometry: number[]; is_blendshape?: boolean }) => {
-      if (isLoaded) {
-        // 构造新协议：is_bs:1|0.1,0.2... 或 is_bs:0|x,y,z...
-        const prefix = `is_bs:${frame.is_blendshape ? "1" : "0"}|`;
-        const dataString = prefix + frame.geometry.join(",");
-        sendMessage("AvatarManager", "UpdateGeometry", dataString);
+export const Avatar3D: React.FC<Avatar3DProps> = ({ className = "" }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const meshRef = useRef<THREE.Mesh | null>(null);
+  const morphMapRef = useRef<Map<string, number>>(new Map());
+  const [loadingProgress, setLoadingProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const { audioElement, isPlaying, offlineWeights, emotion } = useTTSStore();
+  
+  // 使用 Ref 同步 Store 状态到渲染循环
+  const stateRef = useRef({ isPlaying, offlineWeights, audioElement, emotion });
+  stateRef.current.isPlaying = isPlaying;
+  stateRef.current.offlineWeights = offlineWeights;
+  stateRef.current.audioElement = audioElement;
+  stateRef.current.emotion = emotion;
+
+  // 状态变量用于 Idle Animation
+  const blinkTimerRef = useRef(0);
+  const nextBlinkTimeRef = useRef(Math.random() * 3 + 2);
+  const blinkDurationRef = useRef(0.15);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    
+    console.log("[Avatar3D] 组件挂载，初始化渲染引擎...");
+
+    const width = containerRef.current.clientWidth;
+    const height = containerRef.current.clientHeight;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x222222);
+
+    const camera = new THREE.PerspectiveCamera(35, width / height, 0.1, 100);
+    // 固定用户调整后的理想视角
+    camera.position.set(-0.01, 0.84, 0.60);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    
+    // 调试用：将变量挂载到全局 (调试完成后可删除)
+    (window as any).camera = camera;
+    (window as any).scene = scene;
+
+    // 清理旧的 canvas 避免重影 (Strict Mode)
+    if (containerRef.current) {
+      containerRef.current.innerHTML = "";
+      containerRef.current.appendChild(renderer.domElement);
+    }
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    (window as any).controls = controls;
+    controls.enableDamping = true;
+    // 固定用户调整后的目标观察点
+    controls.target.set(-0.01, 0.84, 0);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
+    scene.add(ambientLight);
+    
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+    dirLight.position.set(5, 5, 5);
+    scene.add(dirLight);
+
+    // 添加点光源增强面部立体感
+    const pointLight = new THREE.PointLight(0xffffff, 2.0, 10);
+    pointLight.position.set(0, 1, 2);
+    scene.add(pointLight);
+
+    const loader = new GLTFLoader();
+    console.log("[Avatar3D] 开始加载模型...");
+    loader.load(
+      "/models/avatar.glb",
+      (gltf) => {
+        console.log("[Avatar3D] 模型文件读取成功！对象结构:", gltf);
+        
+        gltf.scene.traverse((child) => {
+          if ((child as THREE.Mesh).isMesh) {
+            console.log("[Avatar3D] 发现网格:", child.name);
+            const mesh = child as THREE.Mesh;
+            if (mesh.morphTargetDictionary) {
+              console.log("[Avatar3D] 发现 MorphTargets:", Object.keys(mesh.morphTargetDictionary).length);
+              meshRef.current = mesh;
+              ARKIT_BS.forEach((name) => {
+                const idx = mesh.morphTargetDictionary![name] || mesh.morphTargetDictionary![name.toLowerCase()];
+                if (idx !== undefined) morphMapRef.current.set(name, idx);
+              });
+            }
+          }
+        });
+
+        const box = new THREE.Box3().setFromObject(gltf.scene);
+        const center = box.getCenter(new THREE.Vector3());
+        gltf.scene.position.sub(center);
+        scene.add(gltf.scene);
+        setLoadingProgress(100);
+      },
+      (xhr) => {
+        setLoadingProgress(Math.round((xhr.loaded / xhr.total) * 100));
+      },
+      (err) => {
+        console.error("Failed to load model:", err);
+        setError("模型加载失败");
       }
-    },
-    [isLoaded, sendMessage]
-  );
+    );
 
-  const { isConnected } = useA2FWebSocket({
-    autoConnect: true,
-    onFrame: handleFrame,
-  });
+    let animateId: number;
+    const animate = () => {
+      animateId = requestAnimationFrame(animate);
+      controls.update();
+
+      const time = performance.now() * 0.001;
+      const { isPlaying: activePlaying, offlineWeights: activeWeights, audioElement: activeAudio, emotion: activeEmotion } = stateRef.current;
+
+      if (meshRef.current) {
+        // --- 1. Idle Animation & Emotions ---
+        const breathing = Math.sin(time * 1.5) * 0.02; 
+        
+        // 情感表现逻辑 (简单的 MorphTarget 叠加)
+        let happyWeight = 0;
+        let sadWeight = 0;
+        if (activeEmotion === 'happy' || activeEmotion === 'joy') happyWeight = 0.5;
+        if (activeEmotion === 'sad' || activeEmotion === 'sorrow') sadWeight = 0.5;
+
+        const smileLeftIdx = morphMapRef.current.get('mouthSmileLeft');
+        const smileRightIdx = morphMapRef.current.get('mouthSmileRight');
+        const frownLeftIdx = morphMapRef.current.get('mouthFrownLeft');
+        const frownRightIdx = morphMapRef.current.get('mouthFrownRight');
+
+        if (smileLeftIdx !== undefined) meshRef.current.morphTargetInfluences![smileLeftIdx] = happyWeight;
+        if (smileRightIdx !== undefined) meshRef.current.morphTargetInfluences![smileRightIdx] = happyWeight;
+        if (frownLeftIdx !== undefined) meshRef.current.morphTargetInfluences![frownLeftIdx] = sadWeight;
+        if (frownRightIdx !== undefined) meshRef.current.morphTargetInfluences![frownRightIdx] = sadWeight;
+        
+        // 自动眨眼
+        blinkTimerRef.current += 1/60; 
+        let blinkWeight = 0;
+        if (blinkTimerRef.current > nextBlinkTimeRef.current) {
+          const progress = (blinkTimerRef.current - nextBlinkTimeRef.current) / blinkDurationRef.current;
+          if (progress < 1.0) {
+            blinkWeight = Math.sin(progress * Math.PI);
+          } else {
+            blinkTimerRef.current = 0;
+            // 悲伤时眨眼频率降低
+            const baseInterval = Math.random() * 4 + 2;
+            nextBlinkTimeRef.current = sadWeight > 0 ? baseInterval * 1.5 : baseInterval;
+          }
+        }
+
+        const blinkLeftIdx = morphMapRef.current.get('eyeBlinkLeft');
+        const blinkRightIdx = morphMapRef.current.get('eyeBlinkRight');
+        if (blinkLeftIdx !== undefined) meshRef.current.morphTargetInfluences![blinkLeftIdx] = blinkWeight;
+        if (blinkRightIdx !== undefined) meshRef.current.morphTargetInfluences![blinkRightIdx] = blinkWeight;
+
+        // --- 2. 语音驱动逻辑 ---
+        if (activePlaying) {
+          const audioOffset = (activeAudio?.currentTime || 0) + 0.15; 
+          
+          if (activeWeights && activeWeights.length > 0) {
+            const fps = 30;
+            const targetFrameIndex = audioOffset * fps;
+            const i1 = Math.floor(targetFrameIndex);
+            const i2 = Math.min(i1 + 1, activeWeights.length - 1);
+            const alpha = targetFrameIndex - i1;
+
+            if (i1 >= 0 && i1 < activeWeights.length) {
+              const f1 = activeWeights[i1];
+              const f2 = activeWeights[i2];
+              
+              ARKIT_BS.forEach((name, i) => {
+                if (name === 'eyeBlinkLeft' || name === 'eyeBlinkRight') return;
+                // 跳过受情感控制的 MorphTargets，避免冲突
+                if (['mouthSmileLeft', 'mouthSmileRight', 'mouthFrownLeft', 'mouthFrownRight'].includes(name)) return;
+
+                const mIdx = morphMapRef.current.get(name);
+                if (mIdx !== undefined) {
+                  const w1 = f1.weights[i] !== undefined ? f1.weights[i] : 0;
+                  const w2 = f2.weights[i] !== undefined ? f2.weights[i] : 0;
+                  let interpolated = THREE.MathUtils.lerp(w1, w2, alpha);
+                  
+                  let gain = 1.0; 
+                  // 去掉先前针对特定权重的夸张增益，恢复默认比例
+                  /*
+                  if (name === 'jawOpen') gain = 1.2;
+                  if (name === 'mouthFunnel') gain = 1.1;
+                  if (name.includes('mouthLower')) gain = 0.8;
+                  */
+                  
+                  interpolated *= gain;
+                  if (name === 'jawOpen') interpolated += breathing;
+
+                  interpolated = Math.min(Math.max(interpolated, 0), 1.0);
+                  meshRef.current!.morphTargetInfluences![mIdx] = interpolated;
+                }
+              });
+            }
+          }
+        } else {
+          morphMapRef.current.forEach((mIdx, name) => {
+            if (name === 'eyeBlinkLeft' || name === 'eyeBlinkRight') return;
+            if (meshRef.current!.morphTargetInfluences![mIdx] > 0) {
+              meshRef.current!.morphTargetInfluences![mIdx] *= 0.8;
+            }
+          });
+        }
+      }
+
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    const handleResize = () => {
+      if (!containerRef.current) return;
+      const w = containerRef.current.clientWidth;
+      const h = containerRef.current.clientHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    };
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      console.log("[Avatar3D] 组件卸载，清理资源...");
+      
+      // 停止动画循环
+      cancelAnimationFrame(animateId);
+      
+      if (containerRef.current) {
+        // 安全清理 DOM，避免 NotFoundError
+        if (renderer.domElement && containerRef.current.contains(renderer.domElement)) {
+          containerRef.current.removeChild(renderer.domElement);
+        }
+      }
+      
+      // 彻底释放内存
+      renderer.dispose();
+      scene.traverse((object) => {
+        if ((object as THREE.Mesh).isMesh) {
+          const mesh = object as THREE.Mesh;
+          mesh.geometry.dispose();
+          if (Array.isArray(mesh.material)) {
+            mesh.material.forEach(m => m.dispose());
+          } else {
+            mesh.material.dispose();
+          }
+        }
+      });
+    };
+  }, []);
+
 
   return (
-    <div className={`relative w-full h-full min-h-[400px] flex items-center justify-center bg-black/20 rounded-lg overflow-hidden ${className}`}>
-      {!isLoaded && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-gray-900/80">
-          <div className="w-48 h-2 bg-gray-700 rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-blue-500 transition-all duration-300" 
-              style={{ width: `${Math.round(progression * 100)}%` }}
-            />
-          </div>
-          <p className="mt-4 text-white text-sm font-medium">
-            Loading Unity Digital Human... {Math.round(progression * 100)}%
-          </p>
-        </div>
-      )}
-
-      <Unity
-        unityProvider={unityProvider}
-        style={{ width: "100%", height: "100%" }}
-        devicePixelRatio={window.devicePixelRatio}
-      />
-
-      {/* 状态指示器 */}
-      <div className="absolute top-3 right-3 flex items-center gap-2 px-2 py-1 bg-black/40 rounded-full backdrop-blur-md z-10">
-        <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-green-500" : "bg-red-500 animate-pulse"}`} />
-        <span className="text-[10px] text-white/80 font-mono uppercase tracking-wider">
-          {isConnected ? "Stream Active" : "Waiting for A2F"}
-        </span>
-      </div>
-    </div>
+    <div 
+      ref={containerRef}
+      className={`relative w-full h-full min-h-[400px] bg-gradient-to-b from-black/20 to-black/40 rounded-3xl overflow-hidden ${className}`}
+    />
   );
 };
 
