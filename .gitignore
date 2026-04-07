@@ -129,13 +129,24 @@ Thumbs.db
 # (If data/ is for runtime data/uploads only)
 data/*
 !data/.gitkeep
+artifacts/
+perfrdiff_eval_pack/
+train/
+val/
+*.wav
+*.mp3
+*.glb
+frontend/public/audio_cache/
+test_fastapi_patch.py
+*.obj
+COMPLETION_REPORT.txt
+A2F_DATA_SIZE_VERIFICATION.md
+A2F_VERIFICATION_SUMMARY.md
+a2f_test_viewer.html
 
 # Logs
 *.log
 logs/
-
-# Temporary / Scratch
-test_fastapi_patch.py
 
 # ASR Model Weights (Large files)
 asr/essential/SenseVoiceSmall/*

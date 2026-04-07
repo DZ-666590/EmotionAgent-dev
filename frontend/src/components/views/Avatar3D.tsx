@@ -25,6 +25,7 @@ const ARKIT_BS = [
 export const Avatar3D: React.FC<Avatar3DProps> = ({ className = "" }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const meshRef = useRef<THREE.Mesh | null>(null);
+  const skeletonRef = useRef<THREE.Skeleton | null>(null);
   const morphMapRef = useRef<Map<string, number>>(new Map());
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -99,6 +100,13 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({ className = "" }) => {
         console.log("[Avatar3D] 模型文件读取成功！对象结构:", gltf);
         
         gltf.scene.traverse((child) => {
+          if ((child as THREE.SkinnedMesh).isSkinnedMesh) {
+            const sm = child as THREE.SkinnedMesh;
+            if (sm.skeleton) {
+              skeletonRef.current = sm.skeleton;
+              console.log("[Avatar3D] 发现骨骼:", sm.skeleton.bones.map(b => b.name));
+            }
+          }
           if ((child as THREE.Mesh).isMesh) {
             console.log("[Avatar3D] 发现网格:", child.name);
             const mesh = child as THREE.Mesh;
@@ -136,10 +144,45 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({ className = "" }) => {
       const time = performance.now() * 0.001;
       const { isPlaying: activePlaying, offlineWeights: activeWeights, audioElement: activeAudio, emotion: activeEmotion } = stateRef.current;
 
+      // --- 0. Skeleton Animation (Nodding & Breathing) ---
+      if (skeletonRef.current) {
+        // 呼吸感：脊柱微动
+        const spine = skeletonRef.current.getBoneByName('Spine') || skeletonRef.current.getBoneByName('spine');
+        if (spine) {
+          spine.rotation.x = Math.sin(time * 0.8) * 0.01;
+          spine.rotation.z = Math.cos(time * 0.5) * 0.005;
+        }
+
+        // 点头逻辑：基于口型张开度 (jawOpen) 的程序化反馈
+        const neck = skeletonRef.current.getBoneByName('Neck') || skeletonRef.current.getBoneByName('neck');
+        const head = skeletonRef.current.getBoneByName('Head') || skeletonRef.current.getBoneByName('head');
+        
+        if (head || neck) {
+          const targetBone = head || neck;
+          let nodAmount = 0;
+          
+          if (activePlaying && meshRef.current?.morphTargetInfluences) {
+            const jawOpenIdx = morphMapRef.current.get('jawOpen');
+            if (jawOpenIdx !== undefined) {
+              const jawOpenVal = meshRef.current.morphTargetInfluences[jawOpenIdx];
+              // 当大声说话（嘴张得大）时，产生微弱的头部随动
+              nodAmount = jawOpenVal * 0.05 + Math.sin(time * 3) * 0.01 * jawOpenVal;
+            }
+          }
+          
+          // 叠加自然的微小头部晃动
+          const idleSwayX = Math.sin(time * 1.2) * 0.01;
+          const idleSwayY = Math.cos(time * 0.7) * 0.01;
+          
+          if (targetBone) {
+            targetBone.rotation.x = THREE.MathUtils.lerp(targetBone.rotation.x, nodAmount + idleSwayX, 0.1);
+            targetBone.rotation.y = THREE.MathUtils.lerp(targetBone.rotation.y, idleSwayY, 0.1);
+          }
+        }
+      }
+
       if (meshRef.current) {
         // --- 1. Idle Animation & Emotions ---
-        const breathing = Math.sin(time * 1.5) * 0.02; 
-        
         // 情感表现逻辑 (简单的 MorphTarget 叠加)
         let happyWeight = 0;
         let sadWeight = 0;
@@ -211,7 +254,8 @@ export const Avatar3D: React.FC<Avatar3DProps> = ({ className = "" }) => {
                   */
                   
                   interpolated *= gain;
-                  if (name === 'jawOpen') interpolated += breathing;
+                  // 移除之前的 breathing 逻辑，现在由骨骼驱动实现更自然的身体微动
+                  // if (name === 'jawOpen') interpolated += breathing;
 
                   interpolated = Math.min(Math.max(interpolated, 0), 1.0);
                   meshRef.current!.morphTargetInfluences![mIdx] = interpolated;
